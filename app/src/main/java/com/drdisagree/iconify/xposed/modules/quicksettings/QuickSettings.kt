@@ -5,6 +5,8 @@ import android.app.Dialog
 import android.app.Notification
 import android.content.Context
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.DrawableWrapper
+import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.os.Build
 import android.os.Bundle
@@ -158,11 +160,14 @@ class QuickSettings(context: Context) : ModPack(context) {
         shadeHeaderClass
             .hookMethod("ExpandedShadeHeader")
             .suppressError()
-            .runBefore {
-                expandedHeaderDepth++
-                applyExpandedHeaderHeight()
-            }
-            .runAfter { expandedHeaderDepth-- }
+            .runAround(
+                before = {
+                    expandedHeaderDepth++
+                    applyExpandedHeaderHeight()
+                    true
+                },
+                after = { _, entered -> if (entered == true) expandedHeaderDepth-- }
+            )
 
         findClass("androidx.compose.foundation.layout.SizeKt", suppressError = true)
             .hookMethodMatchPattern("defaultMinSize-.*\\\$default")
@@ -297,6 +302,30 @@ class QuickSettings(context: Context) : ModPack(context) {
 
                 param.thisObject.setField("mTintColor", 0)
             }
+
+        notificationBackgroundViewClass
+            .hookMethod("setTint")
+            .suppressError()
+            .runAround(
+                before = before@{ param ->
+                    if (!fixNotificationColor) return@before null
+
+                    val background = param.thisObject.getFieldSilently("mBackground")
+                            as? LayerDrawable ?: return@before null
+
+                    background.tintedLayers().map { layer ->
+                        Triple(layer, layer.color, layer.colors)
+                    }
+                },
+                after = { _, savedColors ->
+                    savedColors?.forEach { (layer, color, colors) ->
+                        when {
+                            color != null -> layer.color = color
+                            colors != null -> layer.colors = colors
+                        }
+                    }
+                }
+            )
 
         footerViewClass
             .hookMethodMatchPattern("updateColors.*")
@@ -647,6 +676,13 @@ class QuickSettings(context: Context) : ModPack(context) {
                 }
         }
     }
+
+    private fun LayerDrawable.tintedLayers(): List<GradientDrawable> =
+        (0 until minOf(numberOfLayers, 2)).mapNotNull { index ->
+            val layer = getDrawable(index)
+            val target = if (layer is DrawableWrapper) layer.drawable else layer
+            target?.mutate() as? GradientDrawable
+        }
 
     companion object {
         private const val COMPOSE_MODIFIER_CLASS = ComposeToolkit.MODIFIER_CLASS
